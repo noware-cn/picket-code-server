@@ -1,0 +1,7 @@
+picket-code/
+vscode/
+.stage/
+release/
+app/
+user-data/
+*.log

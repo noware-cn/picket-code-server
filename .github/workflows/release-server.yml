@@ -1,0 +1,216 @@
+name: Release server
+
+# Builds and publishes the remote workspace backend for a given Picket Code tag.
+# The tag must be identical to the client's tag: the handshake compares commits
+# and both sides are built from the same upstream vscode tag.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (must match a dantesun/picket-code tag), e.g. v1.143.1-picket.1-rc.5'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # Upstream pins its own Node version in .nvmrc; the clone happens inside the
+      # build script, so pin the value here and keep it in sync with the tag.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Native modules (kerberos, native-keymap, ...) need these headers.
+      - name: System libraries for native modules
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libkrb5-dev libx11-dev libxkbfile-dev libsecret-1-dev \
+            libxext-dev libxrender-dev libxrandr-dev
+
+      - name: Build
+        run: bash build/build-server.sh "$TAG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-archive
+          path: release/
+          retention-days: 7
+
+  verify:
+    name: Verify
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-archive
+          path: release/
+
+      - name: Verify the checksum
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum -c "picket-code-server-$TAG-SHA256SUMS"
+
+      - name: Unpack and assert the packaged shapes
+        run: |
+          set -euo pipefail
+          mkdir -p app
+          tar -xzf "release/picket-code-server-$TAG-linux-x64.tar.gz" -C app
+          root="app/picket-code-server-linux-x64"
+          node - "$root/product.json" "$TAG" <<'NODE'
+          const fs = require('fs');
+          const p = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const tag = process.argv[3];
+          const expected = tag.replace(/^v/, '').split('-')[0];
+          const fail = [];
+          if (!/^\d+\.\d+\.\d+$/.test(String(p.version))) fail.push(`version is not a bare X.Y.Z: ${JSON.stringify(p.version)}`);
+          if (p.version !== expected) fail.push(`version ${p.version} does not match the tag's upstream ${expected}`);
+          if (p.serverDataFolderName !== '.picket-code-server') fail.push(`serverDataFolderName is ${JSON.stringify(p.serverDataFolderName)}`);
+          if (!/^[0-9a-f]{40}$/.test(String(p.commit))) fail.push(`commit is not a 40-char sha: ${JSON.stringify(p.commit)}`);
+          if (fail.length) { fail.forEach(f => console.error('INVARIANT: ' + f)); process.exit(1); }
+          console.log('product.json ok:', p.serverApplicationName, p.version, p.commit);
+          fs.writeFileSync('expected-commit.txt', p.commit);
+          NODE
+          if find "$root" -maxdepth 4 -name vsda -print -quit | grep -q .; then
+            echo "INVARIANT: vsda must not ship" >&2; exit 1
+          fi
+          grep -rq "PICKET_ICODE_BIN" "$root/out" || { echo "INVARIANT: iCode provider missing from out/" >&2; exit 1; }
+          test -x "$root/bin/picket-code-server" || { echo "INVARIANT: bin/picket-code-server is not executable" >&2; exit 1; }
+          echo "layout ok"
+
+      # The server serves GET /version with its commit; this is the same value the
+      # client compares during the handshake, so a mismatch here is a shipping bug.
+      - name: Smoke test the server
+        run: |
+          set -euo pipefail
+          root="app/picket-code-server-linux-x64"
+          "$root/bin/picket-code-server" \
+            --port 3000 --host 127.0.0.1 --without-connection-token \
+            --user-data-dir "$PWD/user-data" > server.log 2>&1 &
+          pid=$!
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3000/version > got-commit.txt 2>/dev/null; then break; fi
+            sleep 1
+          done
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          if [ ! -s got-commit.txt ]; then
+            echo "FAIL: /version did not respond"; tail -40 server.log; exit 1
+          fi
+          expected="$(cat expected-commit.txt)"
+          got="$(cat got-commit.txt)"
+          if [ "$expected" != "$got" ]; then
+            echo "FAIL: /version returned '$got', product.json says '$expected'"; exit 1
+          fi
+          echo "server answered /version with $got"
+
+  release:
+    name: Publish release
+    needs: [build, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-archive
+          path: release/
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          notes=$(cat <<EOF
+          Picket Code server for \`$TAG\`.
+
+          - Upstream: \`${TAG#v}\` (version part before the first \`-\`)
+          - Asset: \`picket-code-server-$TAG-linux-x64.tar.gz\`
+          - Checksum: \`picket-code-server-$TAG-SHA256SUMS\`
+          - Layout: top-level directory \`picket-code-server-linux-x64/\`, entry \`bin/picket-code-server\`
+
+          The tag must match the client tag: the handshake compares \`product.json.commit\`
+          on both sides.
+          EOF
+          )
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --clobber
+          else
+            gh release create "$TAG" release/* --title "$TAG" --notes "$notes"
+          fi
+
+  mirror:
+    name: Mirror to R2
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-archive
+          path: release/
+
+      - name: Install rclone
+        run: |
+          curl -fsSL -o rclone.deb https://downloads.rclone.org/rclone-current-linux-amd64.deb
+          sudo dpkg -i rclone.deb
+
+      # Same bucket as the client assets; names never collide because of the
+      # `picket-code-server-` prefix. `copy`, never `sync`: older versions stay.
+      - name: Upload to R2
+        run: |
+          set -euo pipefail
+          rclone copy --s3-no-check-bucket --exclude '*-SHA256SUMS' \
+            --header-upload "Cache-Control: public, max-age=31536000, immutable" \
+            release/ r2:picket-releases/ --progress
+          sums="$(ls release/*-SHA256SUMS)"
+          rclone copyto --s3-no-check-bucket --ignore-times \
+            --header-upload "Content-Type: text/plain; charset=utf-8" \
+            --header-upload "Cache-Control: public, max-age=31536000, immutable" \
+            "$sums" "r2:picket-releases/$(basename "$sums")"
+
+      - name: Prune server versions (keep 3)
+        run: |
+          set -euo pipefail
+          # Only ever touch our own prefix so client assets are never pruned here.
+          mapfile -t versions < <(rclone lsf r2:picket-releases/ --files-only \
+            | grep -E '^picket-code-server-v.*-linux-x64\.tar\.gz$' \
+            | sed -E 's/^picket-code-server-(.*)-linux-x64\.tar\.gz$/\1/' \
+            | sort -V | head -n -3)
+          for v in "${versions[@]:-}"; do
+            [ -z "$v" ] && continue
+            echo "pruning $v"
+            rclone delete --s3-no-check-bucket "r2:picket-releases/picket-code-server-$v-linux-x64.tar.gz" || true
+            rclone delete --s3-no-check-bucket "r2:picket-releases/picket-code-server-$v-SHA256SUMS" || true
+          done
+          rclone lsl r2:picket-releases/ | grep 'picket-code-server-' || true
