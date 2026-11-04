@@ -32,6 +32,12 @@ https://download.noware.cn/picket-code-server-v1.143.1-picket.1-rc.5-linux-x64.t
 https://download.noware.cn/picket-code-server-v1.143.1-picket.1-rc.5-SHA256SUMS
 ```
 
+## 一个容易踩的坑：commit 来自 `git rev-parse HEAD`
+
+`product.json.commit` 由 `build/lib/getVersion.ts` 生成：优先 `BUILD_SOURCEVERSION`，否则 `git rev-parse HEAD`。CI 里两端都是"clone 上游 tag → 应用补丁（不提交）"，所以两边的 commit 都是上游 tag 的 commit，握手通过。
+
+**但如果本地在 `vscode/` 里 `git commit` 过**（例如为了导出补丁），本地构建出来的 commit 就变成你自己的提交，与发行版的另一端不一致，握手会报 `Client refused: version mismatch`。导出补丁请用 `git add -N` + `git diff`，不要提交。
+
 ## 构建产物的三条不变量
 
 CI 每次都会断言，任何一条失败即视为坏包：
