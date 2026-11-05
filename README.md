@@ -23,7 +23,11 @@ Windows 上的 Picket Code 通过它把整个工作区放进 WSL（或任何 Lin
 | 顶层目录 | `picket-code-server-linux-x64/`（**不含**版本号） |
 | 入口 | `bin/picket-code-server`（`product.serverApplicationName`） |
 | 校验 | `picket-code-server-<tag>-SHA256SUMS` |
-| 发布 | GitHub Release（私有仓库，需鉴权）+ R2 镜像 `r2:picket-releases/` → https://download.noware.cn/ |
+| 发布 | GitHub Release（**公开仓库**，匿名可下载）+ R2 镜像 `r2:picket-releases/` → https://download.noware.cn/ |
+
+客户端构建用 `PICKET_SERVER_TAG` 钉住这里的某个 tag，`build/wsl/fetch-payload.sh` 直接走
+`https://github.com/noware-cn/picket-code-server/releases/download/<tag>/<file>` 匿名下载，
+不需要任何令牌。**这个仓库必须保持公开**：客户端发布流水线与离线组件包都依赖匿名读取。
 
 镜像上的直链形状：
 
