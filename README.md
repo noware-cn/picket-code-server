@@ -11,9 +11,17 @@ Windows 上的 Picket Code 通过它把整个工作区放进 WSL（或任何 Lin
 
 ## 版本契约
 
-- **tag 与客户端完全一致**：客户端 `v1.143.1-picket.1-rc.5` → 本仓库同名 tag。
-- 上游版本从 tag 推导：`v1.143.1-picket.1-rc.5` → `1.143.1`。
-- 客户端与服务端的 `product.json.commit` 必须相同：握手时 server 校验 `rendererCommit === myCommit`，不一致会直接 `Client refused: version mismatch`（`remoteExtensionHostAgentServer.ts:351-357`）。两者都由同一个上游 tag 构建，天然一致；CI 里有断言兜底。
+真实的约束只有一条：**客户端与服务端的 `product.json.commit` 必须相同**。握手时 server 校验
+`rendererCommit === myCommit`，不一致直接 `Client refused: version mismatch`
+（`remoteExtensionHostAgentServer.ts:351-357`），CI 里有断言兜底。
+
+- 上游版本从 tag 推导：`v1.143.1-picket.1-rc.5` → `1.143.1`。只要两边源自同一个上游 tag，
+  这条约束就自动成立。
+- **tag 不必与客户端逐一相同**：客户端用 `PICKET_SERVER_TAG` 钉住本仓库的某个 tag，可以是
+  早一个 RC 的载荷（例如客户端 `…-rc.5` 钉本仓库 `…-rc.4`），前提是两者上游版本一致。
+  载荷只在服务端行为真的变了（例如 server 侧补丁、agent host 改动）时才需要重出；
+  纯 UI 扩展或客户端打包改动不必重出。
+- 初始维护期仍建议 RC 对 RC 重出一次，先用低风险的方式把这条链路跑熟。
 
 ## 产物契约
 
