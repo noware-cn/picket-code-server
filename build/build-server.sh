@@ -112,8 +112,8 @@ if (!/^\d+\.\d+\.\d+$/.test(String(p.version))) {
 if (p.version !== expected) {
 	fail.push(`version ${JSON.stringify(p.version)} does not match the upstream ${expected}`);
 }
-if (p.serverDataFolderName !== '.picket-code-server') {
-	fail.push(`serverDataFolderName must be .picket-code-server, got ${JSON.stringify(p.serverDataFolderName)}`);
+if (p.serverDataFolderName !== '.vscode-server') {
+	fail.push(`serverDataFolderName must be .vscode-server, got ${JSON.stringify(p.serverDataFolderName)}`);
 }
 if (p.serverApplicationName !== 'picket-code-server') {
 	fail.push(`serverApplicationName must be picket-code-server, got ${JSON.stringify(p.serverApplicationName)}`);

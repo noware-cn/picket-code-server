@@ -97,7 +97,7 @@ jobs:
           const fail = [];
           if (!/^\d+\.\d+\.\d+$/.test(String(p.version))) fail.push(`version is not a bare X.Y.Z: ${JSON.stringify(p.version)}`);
           if (p.version !== expected) fail.push(`version ${p.version} does not match the upstream ${expected}`);
-          if (p.serverDataFolderName !== '.picket-code-server') fail.push(`serverDataFolderName is ${JSON.stringify(p.serverDataFolderName)}`);
+          if (p.serverDataFolderName !== '.vscode-server') fail.push(`serverDataFolderName is ${JSON.stringify(p.serverDataFolderName)}`);
           if (!/^[0-9a-f]{40}$/.test(String(p.commit))) fail.push(`commit is not a 40-char sha: ${JSON.stringify(p.commit)}`);
           if (fail.length) { fail.forEach(f => console.error('INVARIANT: ' + f)); process.exit(1); }
           console.log('product.json ok:', p.serverApplicationName, p.version, p.commit);

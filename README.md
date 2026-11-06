@@ -59,7 +59,7 @@ https://download.noware.cn/picket-code-server-1.143.1-SHA256SUMS
 CI 每次都会断言，任何一条失败即视为坏包：
 
 1. `product.json.version` 是**裸 `X.Y.Z`** 且等于指定的上游版本（带 `-`/`+` 后缀会让所有扩展被判不兼容）。
-2. `product.json.serverDataFolderName` 为 `.picket-code-server`。
+2. `product.json.serverDataFolderName` 为 `.vscode-server`：WSL 侧的数据根必须与官方 Remote-WSL 相同（`~/.vscode-server`），否则同一个发行版里两个扩展各写各的目录、用户数据分叉。
 3. 产物里**没有 vsda**：server 只在存在 vsda 校验器时才强制客户端签名（`remoteExtensionHostAgentServer.ts:361` 的 `if (!validator) valid = true`），我们签不出微软签名，必须保持无 vsda 才能连上。
 
 另外断言 iCode 确实进了包：`out/` 里能 grep 到 `PICKET_ICODE_BIN`（min 构建里字符串字面量会保留）。
