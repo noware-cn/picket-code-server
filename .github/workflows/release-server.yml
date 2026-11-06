@@ -1,22 +1,34 @@
 name: Release server
 
-# Builds and publishes the remote workspace backend for a given Picket Code tag.
-# The tag must be identical to the client's tag: the handshake compares commits
-# and both sides are built from the same upstream vscode tag.
+# Builds and publishes the remote workspace backend for a given Picket Code
+# source ref. The server is versioned on its own: the client only requires the
+# same `product.json.commit` and a version at or above its minimum, so a version
+# is named here rather than derived from a client tag.
+#
+# Publishing is deliberate, never implied by a tag push: a client tag says
+# nothing about which server version it should produce.
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Tag to build (must match a dantesun/picket-code tag), e.g. v1.143.1-picket.1-rc.5'
+      version:
+        description: 'Server version, bare semver without a v prefix (e.g. 1.143.1). Becomes the tag server-v<version>.'
         required: true
+      source_ref:
+        description: 'Client branch or tag whose patches build this payload (e.g. feat/picket-wsl, v1.143.1-picket.1-rc.5)'
+        required: true
+        default: 'main'
+      vscode_version:
+        description: 'microsoft/vscode tag the client is based on (e.g. 1.143.1). Must match the client build.'
+        required: true
+        default: '1.143.1'
 
 permissions:
   contents: write
 
 env:
-  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  VERSION: ${{ github.event.inputs.version }}
+  SOURCE_REF: ${{ github.event.inputs.source_ref }}
+  VSCODE_VERSION: ${{ github.event.inputs.vscode_version }}
 
 jobs:
   build:
@@ -45,7 +57,7 @@ jobs:
             libxext-dev libxrender-dev libxrandr-dev
 
       - name: Build
-        run: bash build/build-server.sh "$TAG"
+        run: bash build/build-server.sh "$SOURCE_REF" "$VERSION" "$VSCODE_VERSION"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -70,22 +82,21 @@ jobs:
         run: |
           set -euo pipefail
           cd release
-          sha256sum -c "picket-code-server-$TAG-SHA256SUMS"
+          sha256sum -c "picket-code-server-$VERSION-SHA256SUMS"
 
       - name: Unpack and assert the packaged shapes
         run: |
           set -euo pipefail
           mkdir -p app
-          tar -xzf "release/picket-code-server-$TAG-linux-x64.tar.gz" -C app
+          tar -xzf "release/picket-code-server-$VERSION-linux-x64.tar.gz" -C app
           root="app/picket-code-server-linux-x64"
-          node - "$root/product.json" "$TAG" <<'NODE'
+          node - "$root/product.json" "$VSCODE_VERSION" <<'NODE'
           const fs = require('fs');
           const p = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-          const tag = process.argv[3];
-          const expected = tag.replace(/^v/, '').split('-')[0];
+          const expected = process.argv[3];
           const fail = [];
           if (!/^\d+\.\d+\.\d+$/.test(String(p.version))) fail.push(`version is not a bare X.Y.Z: ${JSON.stringify(p.version)}`);
-          if (p.version !== expected) fail.push(`version ${p.version} does not match the tag's upstream ${expected}`);
+          if (p.version !== expected) fail.push(`version ${p.version} does not match the upstream ${expected}`);
           if (p.serverDataFolderName !== '.picket-code-server') fail.push(`serverDataFolderName is ${JSON.stringify(p.serverDataFolderName)}`);
           if (!/^[0-9a-f]{40}$/.test(String(p.commit))) fail.push(`commit is not a 40-char sha: ${JSON.stringify(p.commit)}`);
           if (fail.length) { fail.forEach(f => console.error('INVARIANT: ' + f)); process.exit(1); }
@@ -143,22 +154,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          tag="server-v$VERSION"
           notes=$(cat <<EOF
-          Picket Code server for \`$TAG\`.
+          Picket Code server \`$VERSION\`, built from \`$SOURCE_REF\` on upstream \`$VSCODE_VERSION\`.
 
-          - Upstream: \`${TAG#v}\` (version part before the first \`-\`)
-          - Asset: \`picket-code-server-$TAG-linux-x64.tar.gz\`
-          - Checksum: \`picket-code-server-$TAG-SHA256SUMS\`
+          - Tag: \`$tag\` (the client reads \`server-v<version>\`, never the client's own tag)
+          - Asset: \`picket-code-server-$VERSION-linux-x64.tar.gz\`
+          - Checksum: \`picket-code-server-$VERSION-SHA256SUMS\`
           - Layout: top-level directory \`picket-code-server-linux-x64/\`, entry \`bin/picket-code-server\`
+          - \`product.json.version\`: \`$VSCODE_VERSION\` (extensions require a bare upstream version); the server's own version is this release's tag
+          - \`product.json.commit\`: printed by the verify job; a client only adopts a payload with its own commit
 
-          The tag must match the client tag: the handshake compares \`product.json.commit\`
-          on both sides.
+          Clients accept this payload when their \`picketServerMinVersion\` is at most \`$VERSION\`.
           EOF
           )
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" release/* --clobber
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" release/* --clobber
           else
-            gh release create "$TAG" release/* --title "$TAG" --notes "$notes"
+            gh release create "$tag" release/* --title "Picket Code server $VERSION" --notes "$notes"
           fi
 
   mirror:
@@ -203,8 +216,10 @@ jobs:
         run: |
           set -euo pipefail
           # Only ever touch our own prefix so client assets are never pruned here.
+          # The version pattern starts with a digit: the pre-rework `…-v1.143.1-…`
+          # payloads are left alone so an older client pinned to one keeps working.
           mapfile -t versions < <(rclone lsf r2:picket-releases/ --files-only \
-            | grep -E '^picket-code-server-v.*-linux-x64\.tar\.gz$' \
+            | grep -E '^picket-code-server-[0-9].*-linux-x64\.tar\.gz$' \
             | sed -E 's/^picket-code-server-(.*)-linux-x64\.tar\.gz$/\1/' \
             | sort -V | head -n -3)
           for v in "${versions[@]:-}"; do

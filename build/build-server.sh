@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 # Build stage of the Picket Code server (upstream calls it `vscode-server`, i.e. reh).
 #
-# Usage: build-server.sh <picket-tag> [platform] [arch]
-#   build-server.sh v1.143.1-picket.1-rc.5            -> linux x64
+# Usage: build-server.sh <source-ref> <version> <vscode-version> [platform] [arch]
+#   build-server.sh feat/picket-wsl 1.143.1 1.143.1   -> linux x64
 #
-# Sources of truth live in dantesun/picket-code at the same tag: the extension
-# removal list and the patch set. This script only assembles them with a fresh
-# microsoft/vscode clone and runs the upstream server build.
+# The server version is its own number: it says nothing about the client version,
+# and a client only accepts a payload whose `commit` matches its own and whose
+# version is at least `product.json.picketServerMinVersion`. `source-ref` is the
+# client branch or tag whose patches and extension-removal list build this
+# payload; `vscode-version` is the microsoft/vscode tag the client is based on.
 set -euo pipefail
 
-TAG="${1:?usage: build-server.sh <picket-tag> [platform] [arch]}"
-PLATFORM="${2:-linux}"
-ARCH="${3:-x64}"
+SOURCE_REF="${1:?usage: build-server.sh <source-ref> <version> <vscode-version> [platform] [arch]}"
+VERSION="${2:?usage: build-server.sh <source-ref> <version> <vscode-version> [platform] [arch]}"
+VSCODE_VERSION="${3:?usage: build-server.sh <source-ref> <version> <vscode-version> [platform] [arch]}"
+PLATFORM="${4:-linux}"
+ARCH="${5:-x64}"
 
 case "$PLATFORM" in
   linux) ;;
@@ -22,25 +26,29 @@ case "$ARCH" in
   *) echo "Unknown arch: $ARCH (expected x64|arm64)" >&2; exit 1 ;;
 esac
 
+# The client parses this with `parseVersion()`, which reads a bare x.y.z and judges
+# a leading `v` unparsable — so a tag-shaped value would be a silently unusable
+# payload.
+if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+  echo "Version must be a bare semver without a 'v' prefix (got '$VERSION')" >&2
+  exit 1
+fi
+if ! printf '%s' "$VSCODE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo "Upstream vscode version must be a bare x.y.z (got '$VSCODE_VERSION')" >&2
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RELEASE_DIR="$ROOT_DIR/release"
 CLIENT_REPO="$ROOT_DIR/picket-code"
 VSCODE_DIR="$ROOT_DIR/vscode"
 
-# v1.143.1-picket.1-rc.5 -> 1.143.1
-VSCODE_VERSION="${TAG#v}"
-VSCODE_VERSION="${VSCODE_VERSION%%-*}"
-if [ -z "$VSCODE_VERSION" ] || [ "$VSCODE_VERSION" = "$TAG" ]; then
-  echo "Tag must look like v<upstream>-picket.<n>: got '$TAG'" >&2
-  exit 1
-fi
+echo "==> [server] version=$VERSION source=$SOURCE_REF upstream=$VSCODE_VERSION $PLATFORM-$ARCH"
 
-echo "==> [server] tag=$TAG upstream=$VSCODE_VERSION $PLATFORM-$ARCH"
-
-echo "==> [server] Fetching the client repo at $TAG (patch list + removal list)"
+echo "==> [server] Fetching the client repo at $SOURCE_REF (patch list + removal list)"
 rm -rf "$CLIENT_REPO"
-git clone --depth 1 --branch "$TAG" \
+git clone --depth 1 --branch "$SOURCE_REF" \
   https://github.com/dantesun/picket-code.git "$CLIENT_REPO"
 
 echo "==> [server] Cloning microsoft/vscode@$VSCODE_VERSION"
@@ -90,12 +98,19 @@ BUILT="$ROOT_DIR/vscode-reh-$PLATFORM-$ARCH"
 [ -d "$BUILT" ] || { echo "Build output missing: $BUILT" >&2; exit 1; }
 
 echo "==> [server] Checking the packaging invariants"
-node - "$BUILT/product.json" <<'NODE'
+node - "$BUILT/product.json" "$VSCODE_VERSION" <<'NODE'
 const fs = require('fs');
 const p = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const expected = process.argv[3];
 const fail = [];
 if (!/^\d+\.\d+\.\d+$/.test(String(p.version))) {
 	fail.push(`version must be a bare X.Y.Z, got ${JSON.stringify(p.version)}`);
+}
+// The payload always carries the upstream version; the server's own version lives
+// in the release tag and in the client catalog, never in product.json — an
+// extension-compatible version is what every extension checks at load.
+if (p.version !== expected) {
+	fail.push(`version ${JSON.stringify(p.version)} does not match the upstream ${expected}`);
 }
 if (p.serverDataFolderName !== '.picket-code-server') {
 	fail.push(`serverDataFolderName must be .picket-code-server, got ${JSON.stringify(p.serverDataFolderName)}`);
@@ -129,10 +144,10 @@ rm -rf "$STAGE" && mkdir -p "$STAGE"
 cp -a "$BUILT" "$STAGE/$PACKAGE_NAME"
 
 mkdir -p "$RELEASE_DIR"
-ARCHIVE="picket-code-server-$TAG-linux-$ARCH.tar.gz"
+ARCHIVE="picket-code-server-$VERSION-linux-$ARCH.tar.gz"
 rm -f "$RELEASE_DIR/$ARCHIVE"
 tar -czf "$RELEASE_DIR/$ARCHIVE" -C "$STAGE" "$PACKAGE_NAME"
-( cd "$RELEASE_DIR" && sha256sum "$ARCHIVE" > "picket-code-server-$TAG-SHA256SUMS" )
+( cd "$RELEASE_DIR" && sha256sum "$ARCHIVE" > "picket-code-server-$VERSION-SHA256SUMS" )
 
 echo "==> [server] Done: $RELEASE_DIR/$ARCHIVE"
-ls -lh "$RELEASE_DIR/$ARCHIVE" "$RELEASE_DIR/picket-code-server-$TAG-SHA256SUMS"
+ls -lh "$RELEASE_DIR/$ARCHIVE" "$RELEASE_DIR/picket-code-server-$VERSION-SHA256SUMS"
